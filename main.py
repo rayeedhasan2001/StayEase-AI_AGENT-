@@ -29,11 +29,15 @@ class ConversationHistoryResponse(BaseModel):
 
 @app.post("/api/chat/{conversation_id}/message", response_model=ChatMessageResponse)
 def send_message(conversation_id: str, payload: ChatMessageRequest) -> ChatMessageResponse:
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
     history = conversation_store.get(conversation_id, [])
     state: AgentState = {
         "conversation_id": conversation_id,
         "messages": history,
-        "user_message": payload.message,
+        "user_message": message,
         "intent": None,
         "search_params": None,
         "listing_id": None,
