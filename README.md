@@ -17,7 +17,7 @@ flowchart TD
     Guest --> API
     API --> Detect
 
-    subgraph Orchestrator Chain
+    subgraph Orchestrator["Orchestrator Chain"]
         Detect[detect_intent_and_route]
         Extract[extract_query_params]
     end
@@ -33,7 +33,7 @@ flowchart TD
 
     ParamCheck -->|No| Router
 
-    subgraph Executor Agent (LangGraph)
+    subgraph Executor["Executor Agent - LangGraph"]
         Router{Conditional entry}
         SearchNode[search_node]
         DetailsNode[details_node]
