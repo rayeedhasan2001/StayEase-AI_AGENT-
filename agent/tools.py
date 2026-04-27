@@ -203,14 +203,18 @@ def detect_intent_and_route(message: str, messages: list[dict[str, str]]) -> dic
 @tool("extract_query_params", args_schema=ExtractQueryParamsInput)
 def extract_query_params(intent: str, message: str, messages: list[dict[str, str]]) -> dict:
     """Extract clean tool input and identify missing fields before execution."""
-    combined_text = f"{_history_text(messages)}\n{message}"
+    recent_history = _history_text(messages[-4:])
     tool_input: dict = {}
     missing_fields: list[str] = []
 
     if intent == "search":
-        location = _find_location(combined_text)
-        check_in, check_out = _find_dates(combined_text)
-        guests = _find_guests(combined_text)
+        location = _find_location(message) or _find_location(recent_history)
+        check_in, check_out = _find_dates(message)
+        if not (check_in and check_out):
+            check_in, check_out = _find_dates(recent_history)
+        guests = _find_guests(message)
+        if guests is None:
+            guests = _find_guests(recent_history)
 
         if location:
             tool_input["location"] = location
@@ -229,17 +233,21 @@ def extract_query_params(intent: str, message: str, messages: list[dict[str, str
             missing_fields.append("guests")
 
     elif intent == "details":
-        listing_id = _find_listing_id(combined_text)
+        listing_id = _find_listing_id(message) or _find_listing_id(recent_history)
         if listing_id:
             tool_input["listing_id"] = listing_id
         else:
             missing_fields.append("listing_id")
 
     elif intent == "book":
-        listing_id = _find_listing_id(combined_text)
-        check_in, check_out = _find_dates(combined_text)
-        guests = _find_guests(combined_text)
-        guest_name = _find_guest_name(combined_text)
+        listing_id = _find_listing_id(message) or _find_listing_id(recent_history)
+        check_in, check_out = _find_dates(message)
+        if not (check_in and check_out):
+            check_in, check_out = _find_dates(recent_history)
+        guests = _find_guests(message)
+        if guests is None:
+            guests = _find_guests(recent_history)
+        guest_name = _find_guest_name(message) or _find_guest_name(recent_history)
 
         if listing_id:
             tool_input["listing_id"] = listing_id
