@@ -1,87 +1,186 @@
 # StayEase AI Agent
 
-This is a small AI agent design for StayEase, a short-term rental platform in Bangladesh. I kept the system simple because the agent only needs to do three things: search properties, show property details, and create a booking. FastAPI handles the API layer, LangGraph controls the agent flow, PostgreSQL stores the data, and Groq or OpenRouter can be used as the LLM provider.
-
-For the code skeleton, I kept the implementation minimal and used sample data in the tool layer so the main focus stays on state design, nodes, and routing.
+This project is a small AI agent design for StayEase, a short-term rental platform in Bangladesh. I used a lightweight orchestrator first, then a small LangGraph executor. The orchestrator handles intent detection and parameter extraction. After that, the executor runs one operation-specific node for search, details, or booking. If important information is missing, the agent asks a follow-up question. If the request goes outside these three supported actions, it keeps a human in the loop.
 
 ## 1. System Overview
 
 ```mermaid
-flowchart LR
-    Guest[Guest]
+flowchart TD
+    Guest[Guest Message]
     API[FastAPI Backend]
-    Agent[LangGraph Agent]
     LLM[Groq / OpenRouter LLM]
     DB[(PostgreSQL)]
+    Human[Human Agent]
+    Reply[Response Back To Guest]
+    FollowUp[Follow-up Question]
 
     Guest --> API
-    API --> Agent
-    Agent --> LLM
-    Agent --> DB
-    DB --> Agent
-    Agent --> API
+    API --> Detect
+
+    subgraph Orchestrator Chain
+        Detect[detect_intent_and_route]
+        Extract[extract_query_params]
+    end
+
+    Detect <--> LLM
+    Detect --> IntentCheck{Supported intent?}
+    IntentCheck -->|No| Human
+    IntentCheck -->|Yes| Extract
+    Extract <--> LLM
+    Extract --> ParamCheck{Missing fields?}
+    ParamCheck -->|Yes| FollowUp
+    FollowUp --> Reply
+
+    ParamCheck -->|No| Router
+
+    subgraph Executor Agent (LangGraph)
+        Router{Conditional entry}
+        SearchNode[search_node]
+        DetailsNode[details_node]
+        BookNode[book_node]
+    end
+
+    Router --> SearchNode
+    Router --> DetailsNode
+    Router --> BookNode
+
+    SearchNode --> SearchTool[search_available_properties]
+    DetailsNode --> DetailsTool[get_listing_details]
+    BookNode --> BookTool[create_booking]
+
+    SearchTool --> DB
+    DetailsTool --> DB
+    BookTool --> DB
+
+    SearchNode --> Reply
+    DetailsNode --> Reply
+    BookNode --> Reply
+    Human --> Reply
+    Reply --> API
     API --> Guest
 ```
 
 ## 2. Conversation Flow
 
-Example guest message: "I need a room in Cox's Bazar for 2 nights for 2 guests."
+Example guest message: "I need a room in Cox's Bazar from 2026-05-10 to 2026-05-12 for 2 guests."
 
 1. The guest message is sent to `POST /api/chat/{conversation_id}/message`.
-2. FastAPI loads the earlier conversation, if there is one, and builds the initial LangGraph state.
-3. For this walkthrough, I am assuming the exact dates are already available in the current session, so `parse_request` figures out that this is a `search` request and extracts:
-   - `location = "Cox's Bazar"`
-   - `check_in = "2026-05-10"`
-   - `check_out = "2026-05-12"`
-   - `guests = 2`
-4. The graph routes to `run_tool`, which calls `search_available_properties`.
-5. The tool checks PostgreSQL for active listings in Cox's Bazar that can take 2 guests and are free for the requested dates.
-6. The tool returns a short list such as:
-   - Sea Breeze Studio - BDT 4,800 per night
-   - Kolatoli Family Suite - BDT 6,200 per night
-   - Inani Ocean View Room - BDT 5,500 per night
-7. The `respond` node turns that result into a short reply with the listing names and prices.
-8. FastAPI sends the reply back to the guest and saves the turn in the conversation history.
+2. FastAPI loads the earlier conversation history and sends the latest message to the orchestrator.
+3. `detect_intent_and_route` classifies the message as `search` and returns `search_node` as the executor target.
+4. `extract_query_params` reads the message and history, then returns a clean input object:
+
+```json
+{
+  "location": "Cox's Bazar",
+  "check_in": "2026-05-10",
+  "check_out": "2026-05-12",
+  "guests": 2
+}
+```
+
+5. Because the required fields are present, FastAPI sends the request into the LangGraph executor.
+6. The graph enters `search_node`.
+7. `search_node` calls `search_available_properties`, which checks PostgreSQL for matching listings.
+8. The tool returns available properties such as `cox-101 - Sea Breeze Studio - BDT 4,800 per night` and `cox-205 - Kolatoli Family Suite - BDT 6,200 per night`.
+9. `search_node` builds the final reply and returns it to FastAPI.
+10. FastAPI stores the user message and assistant reply in conversation history, then sends the response back to the guest.
+
+If some required search fields are missing, the orchestrator does not call LangGraph yet. It asks a follow-up question first. If the request is outside search, details, or booking, the API returns a human handoff message.
 
 ## 3. LangGraph State Design
 
-The graph uses one `TypedDict` state object:
+The LangGraph state is only for the executor layer. The orchestrator runs before the graph and passes structured data into it.
 
 | Field | Type | Why it is needed |
 | --- | --- | --- |
-| `conversation_id` | `str` | Keeps the current turn linked to the right chat. |
-| `messages` | `list[dict[str, str]]` | Holds the conversation history for the current run. |
-| `user_message` | `str` | Stores the latest guest message. |
-| `intent` | `Literal["search", "details", "book", "escalate"] \| None` | Tells the graph what kind of request this is. |
-| `search_params` | `SearchParams \| None` | Stores location, dates, and guest count for search. |
-| `listing_id` | `str \| None` | Stores the selected listing for details or booking. |
-| `booking_request` | `BookingRequest \| None` | Stores the fields needed to make a booking. |
-| `tool_result` | `dict[str, Any] \| None` | Stores the output from the tool call. |
-| `final_response` | `str \| None` | Stores the final reply that goes back to the guest. |
-| `needs_human` | `bool` | Marks requests that should be handed to a human. |
+| `conversation_id` | `str` | Keeps the executor run linked to the active conversation. |
+| `messages` | `list[dict[str, str]]` | Holds the earlier conversation plus the newest user turn. |
+| `user_message` | `str` | Stores the latest guest message for reference. |
+| `intent` | `Literal["search", "details", "book", "escalate"]` | Stores the intent returned by the orchestrator. |
+| `executor_target` | `Literal["search_node", "details_node", "book_node"]` | Tells the graph which node to enter. |
+| `tool_input` | `ToolInput` | Stores the clean structured input prepared by `extract_query_params`. |
+| `tool_result` | `dict[str, Any] \| None` | Stores the result returned by the business tool. |
+| `final_response` | `str \| None` | Stores the final guest-facing reply. |
+| `needs_human` | `bool` | Marks cases where the executor could not safely finish and should hand off. |
 
 ## 4. Node Design
 
-I kept the graph small on purpose:
+The executor graph has only 3 nodes.
 
 | Node | What it does | What it updates | Next node |
 | --- | --- | --- | --- |
-| `load_context` | Adds the latest user message into the current state. | `messages`, `user_message` | `parse_request` |
-| `parse_request` | Decides whether the guest wants search, details, booking, or escalation. | `intent`, `search_params`, `listing_id`, `booking_request`, `needs_human` | Conditional: `run_tool` or `respond` |
-| `run_tool` | Runs the tool that matches the detected intent. | `tool_result` | `respond` |
-| `respond` | Builds the assistant reply from the tool output. | `final_response` | `save_conversation` |
-| `save_conversation` | Adds the final reply to the message list so it can be stored. | `messages` | `END` |
+| `search_node` | Handles search requests end-to-end and calls `search_available_properties`. | `tool_result`, `final_response`, `needs_human` | `END` |
+| `details_node` | Handles property detail requests end-to-end and calls `get_listing_details`. | `tool_result`, `final_response`, `needs_human` | `END` |
+| `book_node` | Handles booking requests end-to-end and calls `create_booking`. | `tool_result`, `final_response`, `needs_human` | `END` |
 
 ## 5. Tool Definitions
 
-### `search_available_properties`
+There are 2 orchestrator tools and 3 business tools.
 
-- Input parameters:
-  - `location: str`
-  - `check_in: date`
-  - `check_out: date`
-  - `guests: int`
-- Output format:
+### 5.1 `detect_intent_and_route`
+
+1. Input parameters
+
+| Field | Type |
+| --- | --- |
+| `message` | `str` |
+| `messages` | `list[dict[str, str]]` |
+
+2. Output format
+
+```json
+{
+  "intent": "search",
+  "executor_target": "search_node",
+  "needs_human": false
+}
+```
+
+3. Used when
+
+This is the first tool called. It decides whether the guest wants search, details, booking, or human escalation.
+
+### 5.2 `extract_query_params`
+
+1. Input parameters
+
+| Field | Type |
+| --- | --- |
+| `intent` | `str` |
+| `message` | `str` |
+| `messages` | `list[dict[str, str]]` |
+
+2. Output format
+
+```json
+{
+  "tool_input": {
+    "location": "Cox's Bazar",
+    "check_in": "2026-05-10",
+    "check_out": "2026-05-12",
+    "guests": 2
+  },
+  "missing_fields": [],
+  "follow_up_question": null
+}
+```
+
+3. Used when
+
+This is the second tool called. It extracts structured fields from the latest message and earlier history. If something is missing, it prepares the follow-up question instead of sending the request into LangGraph.
+
+### 5.3 `search_available_properties`
+
+1. Input parameters
+
+| Field | Type |
+| --- | --- |
+| `location` | `str` |
+| `check_in` | `date` |
+| `check_out` | `date` |
+| `guests` | `int` |
+
+2. Output format
 
 ```json
 {
@@ -98,13 +197,19 @@ I kept the graph small on purpose:
 }
 ```
 
-- Used when the guest asks to find available places for a location, date range, and guest count.
+3. Used when
 
-### `get_listing_details`
+Called by `search_node` after the orchestrator has already prepared a complete search input.
 
-- Input parameters:
-  - `listing_id: str`
-- Output format:
+### 5.4 `get_listing_details`
+
+1. Input parameters
+
+| Field | Type |
+| --- | --- |
+| `listing_id` | `str` |
+
+2. Output format
 
 ```json
 {
@@ -118,32 +223,40 @@ I kept the graph small on purpose:
 }
 ```
 
-- Used when the guest asks about one specific property.
+3. Used when
 
-### `create_booking`
+Called by `details_node` after the orchestrator has identified which listing the guest wants to inspect.
 
-- Input parameters:
-  - `listing_id: str`
-  - `guest_name: str`
-  - `check_in: date`
-  - `check_out: date`
-  - `guests: int`
-- Output format:
+### 5.5 `create_booking`
+
+1. Input parameters
+
+| Field | Type |
+| --- | --- |
+| `listing_id` | `str` |
+| `guest_name` | `str` |
+| `check_in` | `date` |
+| `check_out` | `date` |
+| `guests` | `int` |
+
+2. Output format
 
 ```json
 {
-  "booking_id": "bk-9001",
+  "booking_id": "bk-demo-001",
   "listing_id": "cox-101",
   "status": "confirmed",
   "total_price_bdt": 9600
 }
 ```
 
-- Used when the guest confirms that they want to reserve a property.
+3. Used when
+
+Called by `book_node` after the orchestrator has all required booking information.
 
 ## 6. Database Schema Design
 
-Only three tables are needed for this design.
+Only 3 tables are used in this design.
 
 ### `listings`
 
