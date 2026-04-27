@@ -62,12 +62,34 @@ flowchart TD
 
 ## 2. Conversation Flow
 
+### 2.1 Fresh chat handling
+
+If the guest starts a brand new conversation, the `conversation_id` will not have any saved history yet.
+
+1. FastAPI receives the new message and loads an empty history list.
+2. `detect_intent_and_route` classifies the current message using the latest message itself.
+3. `extract_query_params` reads the current message first.
+4. If all required fields are present, FastAPI sends the structured input into the LangGraph executor.
+5. If required fields are missing, the API returns a follow-up question and saves that turn in the conversation history.
+
+### 2.2 Previous conversation handling
+
+If the guest sends another message using the same `conversation_id`, FastAPI loads the recent conversation history first.
+
+1. The current message is always checked before old history.
+2. If the current message is a direct follow-up like `2 guests` or `2026-05-10 to 2026-05-12`, the orchestrator uses recent history to understand which intent is still active.
+3. `extract_query_params` tries to fill missing fields from the most recent conversation context only, not from the whole conversation blindly.
+4. Current-message values override older values. Older values are only used as fallback context.
+5. If the assistant still does not have enough information, it asks another follow-up question instead of guessing.
+
+### 2.3 Full search example
+
 Example guest message: "I need a room in Cox's Bazar from 2026-05-10 to 2026-05-12 for 2 guests."
 
 1. The guest message is sent to `POST /api/chat/{conversation_id}/message`.
-2. FastAPI loads the earlier conversation history and sends the latest message to the orchestrator.
-3. `detect_intent_and_route` classifies the message as `search` and returns `search_node` as the executor target.
-4. `extract_query_params` reads the message and history, then returns a clean input object:
+2. FastAPI checks whether this is a fresh chat or an existing conversation by looking up the `conversation_id`.
+3. `detect_intent_and_route` classifies the request as `search` and returns `search_node` as the executor target.
+4. `extract_query_params` reads the message and produces this clean input:
 
 ```json
 {
@@ -83,9 +105,10 @@ Example guest message: "I need a room in Cox's Bazar from 2026-05-10 to 2026-05-
 7. `search_node` calls `search_available_properties`, which checks PostgreSQL for matching listings.
 8. The tool returns available properties such as `cox-101 - Sea Breeze Studio - BDT 4,800 per night` and `cox-205 - Kolatoli Family Suite - BDT 6,200 per night`.
 9. `search_node` builds the final reply and returns it to FastAPI.
-10. FastAPI stores the user message and assistant reply in conversation history, then sends the response back to the guest.
+10. FastAPI saves both the user message and the assistant reply under the same `conversation_id`.
+11. The reply is returned to the guest.
 
-If some required search fields are missing, the orchestrator does not call LangGraph yet. It asks a follow-up question first. If the request is outside search, details, or booking, the API returns a human handoff message.
+If the request is outside search, details, or booking, FastAPI does not enter LangGraph at all. It returns a human handoff reply immediately.
 
 ## 3. LangGraph State Design
 
