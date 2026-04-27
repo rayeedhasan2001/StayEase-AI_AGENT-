@@ -2,38 +2,36 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from agent.nodes import (
-    load_context,
-    parse_request,
-    respond,
-    route_after_parse,
-    run_tool,
-    save_conversation,
-)
+from agent.nodes import book_node, details_node, search_node
 from agent.state import AgentState
 
 
+def route_to_executor(state: AgentState) -> str:
+    """Choose the executor node from the orchestrator result."""
+    target = state["executor_target"]
+    if target not in {"search_node", "details_node", "book_node"}:
+        raise ValueError(f"Unsupported executor target: {target}")
+    return target
+
+
 def build_graph():
-    """Construct the StayEase conversation graph."""
+    """Construct the lightweight executor graph."""
     graph = StateGraph(AgentState)
 
-    graph.add_node("load_context", load_context)
-    graph.add_node("parse_request", parse_request)
-    graph.add_node("run_tool", run_tool)
-    graph.add_node("respond", respond)
-    graph.add_node("save_conversation", save_conversation)
+    graph.add_node("search_node", search_node)
+    graph.add_node("details_node", details_node)
+    graph.add_node("book_node", book_node)
 
-    graph.add_edge(START, "load_context")
-    graph.add_edge("load_context", "parse_request")
     graph.add_conditional_edges(
-        "parse_request",
-        route_after_parse,
+        START,
+        route_to_executor,
         {
-            "run_tool": "run_tool",
-            "respond": "respond",
+            "search_node": "search_node",
+            "details_node": "details_node",
+            "book_node": "book_node",
         },
     )
-    graph.add_edge("run_tool", "respond")
-    graph.add_edge("respond", "save_conversation")
-    graph.add_edge("save_conversation", END)
+    graph.add_edge("search_node", END)
+    graph.add_edge("details_node", END)
+    graph.add_edge("book_node", END)
     return graph.compile()

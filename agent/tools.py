@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from langchain.tools import tool
@@ -36,6 +37,32 @@ SAMPLE_LISTINGS = [
     },
 ]
 
+LOCATION_ALIASES = {
+    "cox's bazar": "Cox's Bazar",
+    "coxs bazar": "Cox's Bazar",
+    "cox bazar": "Cox's Bazar",
+    "sylhet": "Sylhet",
+    "dhaka": "Dhaka",
+    "bandarban": "Bandarban",
+}
+
+
+class DetectIntentAndRouteInput(BaseModel):
+    message: str = Field(..., description="Latest user message.")
+    messages: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Previous conversation history.",
+    )
+
+
+class ExtractQueryParamsInput(BaseModel):
+    intent: str = Field(..., description="Detected intent from the routing tool.")
+    message: str = Field(..., description="Latest user message.")
+    messages: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Previous conversation history.",
+    )
+
 
 class SearchAvailablePropertiesInput(BaseModel):
     location: str = Field(..., description="Bangladeshi destination provided by the guest.")
@@ -54,6 +81,195 @@ class CreateBookingInput(BaseModel):
     check_in: date = Field(..., description="Requested arrival date.")
     check_out: date = Field(..., description="Requested departure date.")
     guests: int = Field(..., ge=1, description="Number of guests staying.")
+
+
+def _history_text(messages: list[dict[str, str]]) -> str:
+    return "\n".join(message.get("content", "") for message in messages)
+
+
+def _find_location(text: str) -> str | None:
+    lowered = text.lower()
+    for alias, value in LOCATION_ALIASES.items():
+        if alias in lowered:
+            return value
+    return None
+
+
+def _find_dates(text: str) -> tuple[str | None, str | None]:
+    range_match = re.search(r"(\d{4}-\d{2}-\d{2})\s*(?:to|-)\s*(\d{4}-\d{2}-\d{2})", text)
+    if range_match:
+        return range_match.group(1), range_match.group(2)
+
+    all_dates = re.findall(r"\d{4}-\d{2}-\d{2}", text)
+    if len(all_dates) >= 2:
+        return all_dates[0], all_dates[1]
+    return None, None
+
+
+def _find_guests(text: str) -> int | None:
+    match = re.search(r"(\d+)\s+(?:guest|guests|people|persons)", text.lower())
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _find_listing_id(text: str) -> str | None:
+    lowered = text.lower()
+    for listing in SAMPLE_LISTINGS:
+        if listing["listing_id"].lower() in lowered:
+            return listing["listing_id"]
+    return None
+
+
+def _find_guest_name(text: str) -> str | None:
+    patterns = [
+        r"my name is ([a-zA-Z ]+)",
+        r"this is ([a-zA-Z ]+)",
+        r"book for ([a-zA-Z ]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip().title()
+    return None
+
+
+def _follow_up_question(intent: str, missing_fields: list[str]) -> str:
+    if intent == "search":
+        if missing_fields == ["location"]:
+            return "Which location in Bangladesh would you like to search in?"
+        if missing_fields == ["check_in", "check_out"]:
+            return "What check-in and check-out dates would you like to search for?"
+        if missing_fields == ["guests"]:
+            return "How many guests will be staying?"
+        return "I need the location, dates, and number of guests before I can search. Could you share those?"
+
+    if intent == "details":
+        return "Which listing would you like details for? Please share the listing ID."
+
+    return (
+        "Before I create the booking, please share the listing ID, guest name, stay dates, "
+        "and number of guests."
+    )
+
+
+def _detect_from_history(messages: list[dict[str, str]]) -> str:
+    recent_text = _history_text(messages[-4:]).lower()
+    if (
+        "search" in recent_text
+        or "available options" in recent_text
+        or "check-in and check-out dates" in recent_text
+        or "number of guests before i can search" in recent_text
+    ):
+        return "search"
+    if "details" in recent_text or "which listing would you like details" in recent_text:
+        return "details"
+    if "booking" in recent_text or "reserve" in recent_text or "before i create the booking" in recent_text:
+        return "book"
+    return "escalate"
+
+
+@tool("detect_intent_and_route", args_schema=DetectIntentAndRouteInput)
+def detect_intent_and_route(message: str, messages: list[dict[str, str]]) -> dict:
+    """Classify the request and decide which executor node should handle it."""
+    text = message.lower()
+    intent = "escalate"
+
+    if any(keyword in text for keyword in ["book", "reserve", "confirm", "take it"]):
+        intent = "book"
+    elif any(keyword in text for keyword in ["details", "tell me about", "amenities", "more about"]):
+        intent = "details"
+    elif any(keyword in text for keyword in ["search", "find", "room", "stay", "available"]):
+        intent = "search"
+    elif re.search(r"\d{4}-\d{2}-\d{2}", text) or re.search(r"\d+\s+(?:guest|guests)", text):
+        intent = _detect_from_history(messages)
+    elif _find_listing_id(text):
+        intent = _detect_from_history(messages)
+    elif messages:
+        intent = _detect_from_history(messages)
+
+    executor_map = {
+        "search": "search_node",
+        "details": "details_node",
+        "book": "book_node",
+    }
+    return {
+        "intent": intent,
+        "executor_target": executor_map.get(intent),
+        "needs_human": intent == "escalate",
+    }
+
+
+@tool("extract_query_params", args_schema=ExtractQueryParamsInput)
+def extract_query_params(intent: str, message: str, messages: list[dict[str, str]]) -> dict:
+    """Extract clean tool input and identify missing fields before execution."""
+    combined_text = f"{_history_text(messages)}\n{message}"
+    tool_input: dict = {}
+    missing_fields: list[str] = []
+
+    if intent == "search":
+        location = _find_location(combined_text)
+        check_in, check_out = _find_dates(combined_text)
+        guests = _find_guests(combined_text)
+
+        if location:
+            tool_input["location"] = location
+        else:
+            missing_fields.append("location")
+
+        if check_in and check_out:
+            tool_input["check_in"] = check_in
+            tool_input["check_out"] = check_out
+        else:
+            missing_fields.extend(["check_in", "check_out"])
+
+        if guests is not None:
+            tool_input["guests"] = guests
+        else:
+            missing_fields.append("guests")
+
+    elif intent == "details":
+        listing_id = _find_listing_id(combined_text)
+        if listing_id:
+            tool_input["listing_id"] = listing_id
+        else:
+            missing_fields.append("listing_id")
+
+    elif intent == "book":
+        listing_id = _find_listing_id(combined_text)
+        check_in, check_out = _find_dates(combined_text)
+        guests = _find_guests(combined_text)
+        guest_name = _find_guest_name(combined_text)
+
+        if listing_id:
+            tool_input["listing_id"] = listing_id
+        else:
+            missing_fields.append("listing_id")
+
+        if guest_name:
+            tool_input["guest_name"] = guest_name
+        else:
+            missing_fields.append("guest_name")
+
+        if check_in and check_out:
+            tool_input["check_in"] = check_in
+            tool_input["check_out"] = check_out
+        else:
+            missing_fields.extend(["check_in", "check_out"])
+
+        if guests is not None:
+            tool_input["guests"] = guests
+        else:
+            missing_fields.append("guests")
+
+    unique_missing_fields = list(dict.fromkeys(missing_fields))
+    return {
+        "tool_input": tool_input,
+        "missing_fields": unique_missing_fields,
+        "follow_up_question": _follow_up_question(intent, unique_missing_fields)
+        if unique_missing_fields
+        else None,
+    }
 
 
 @tool("search_available_properties", args_schema=SearchAvailablePropertiesInput)
@@ -79,7 +295,7 @@ def search_available_properties(
 
 @tool("get_listing_details", args_schema=GetListingDetailsInput)
 def get_listing_details(listing_id: str) -> dict:
-    """Return full details for a single listing."""
+    """Return full details for one listing."""
     listing = next(
         (item for item in SAMPLE_LISTINGS if item["listing_id"] == listing_id),
         None,
@@ -106,7 +322,10 @@ def create_booking(
         return {"error": f"Listing {listing_id} was not found."}
 
     nights = (check_out - check_in).days
-    total_price_bdt = max(nights, 1) * listing["price_bdt"]
+    if nights <= 0:
+        return {"error": "Check-out must be after check-in."}
+
+    total_price_bdt = nights * listing["price_bdt"]
     return {
         "booking_id": "bk-demo-001",
         "listing_id": listing_id,
