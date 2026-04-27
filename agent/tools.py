@@ -154,7 +154,7 @@ def _follow_up_question(intent: str, missing_fields: list[str]) -> str:
 
 
 def _detect_from_history(messages: list[dict[str, str]]) -> str:
-    recent_text = _history_text(messages[-4:]).lower()
+    recent_text = _history_text(messages[-3:]).lower()
     if (
         "search" in recent_text
         or "available options" in recent_text
@@ -203,7 +203,7 @@ def detect_intent_and_route(message: str, messages: list[dict[str, str]]) -> dic
 @tool("extract_query_params", args_schema=ExtractQueryParamsInput)
 def extract_query_params(intent: str, message: str, messages: list[dict[str, str]]) -> dict:
     """Extract clean tool input and identify missing fields before execution."""
-    recent_history = _history_text(messages[-4:])
+    recent_history = _history_text(messages[-3:])
     tool_input: dict = {}
     missing_fields: list[str] = []
 

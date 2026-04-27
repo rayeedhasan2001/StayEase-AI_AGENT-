@@ -74,11 +74,11 @@ If the guest starts a brand new conversation, the `conversation_id` will not hav
 
 ### 2.2 Previous conversation handling
 
-If the guest sends another message using the same `conversation_id`, FastAPI loads the recent conversation history first.
+If the guest sends another message using the same `conversation_id`, FastAPI loads recent conversation history first.
 
 1. The current message is always checked before old history.
-2. If the current message is a direct follow-up like `2 guests` or `2026-05-10 to 2026-05-12`, the orchestrator uses recent history to understand which intent is still active.
-3. `extract_query_params` tries to fill missing fields from the most recent conversation context only, not from the whole conversation blindly.
+2. If the current message is a direct follow-up like `2 guests` or `2026-05-10 to 2026-05-12`, the orchestrator checks only the last 3 messages to understand which intent is still active.
+3. `extract_query_params` tries to fill missing fields from only the last 3 messages of conversation context, not from the whole conversation blindly.
 4. Current-message values override older values. Older values are only used as fallback context.
 5. If the assistant still does not have enough information, it asks another follow-up question instead of guessing.
 
