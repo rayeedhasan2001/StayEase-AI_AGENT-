@@ -2,29 +2,29 @@
 
 ## POST `/api/chat/{conversation_id}/message`
 
-Send one guest message to the assistant and get one reply back for that turn.
+Send one guest message to the assistant and receive one reply for that turn. Depending on the message, the reply can be a final answer, a follow-up question, or a human handoff message.
 
 ### Request schema
 
-**Path params**
+1. Path params
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `conversation_id` | `string` | Yes | Unique ID for the conversation. |
+| `conversation_id` | `string` | Yes | Unique conversation ID. |
 
-**JSON body**
+2. JSON body
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `message` | `string` | Yes | Guest message in plain text. |
+| `message` | `string` | Yes | Latest guest message. |
 
 ### Response schema
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `conversation_id` | `string` | Same conversation ID from the path. |
-| `reply` | `string` | Assistant reply for this turn. |
-| `escalated` | `boolean` | `true` if the request needs to go to a human. |
+| `reply` | `string` | Final answer, follow-up question, or human handoff message. |
+| `escalated` | `boolean` | `true` when the request is handed to a human. |
 
 ### Example request
 
@@ -44,14 +44,36 @@ Content-Type: application/json
 ```json
 {
   "conversation_id": "conv-001",
-  "reply": "Available options:\nSea Breeze Studio in Cox's Bazar - BDT 4800/night\nKolatoli Family Suite in Cox's Bazar - BDT 6200/night",
+  "reply": "I found these available options:\n1. cox-101 - Sea Breeze Studio, Cox's Bazar - BDT 4800/night\n2. cox-205 - Kolatoli Family Suite, Cox's Bazar - BDT 6200/night",
   "escalated": false
+}
+```
+
+### Other possible reply styles
+
+1. Follow-up question example
+
+```json
+{
+  "conversation_id": "conv-002",
+  "reply": "What check-in and check-out dates would you like to search for?",
+  "escalated": false
+}
+```
+
+2. Human handoff example
+
+```json
+{
+  "conversation_id": "conv-003",
+  "reply": "I can help with property search, listing details, and booking only. I am handing this conversation to a human agent.",
+  "escalated": true
 }
 ```
 
 ### Possible error responses
 
-`400 Bad Request`
+1. `400 Bad Request`
 
 ```json
 {
@@ -59,7 +81,7 @@ Content-Type: application/json
 }
 ```
 
-`422 Unprocessable Entity`
+2. `422 Unprocessable Entity`
 
 ```json
 {
@@ -73,7 +95,7 @@ Content-Type: application/json
 }
 ```
 
-`500 Internal Server Error`
+3. `500 Internal Server Error`
 
 ```json
 {
@@ -83,11 +105,11 @@ Content-Type: application/json
 
 ## GET `/api/chat/{conversation_id}/history`
 
-Return the stored message history for one conversation.
+Return the stored conversation history for one conversation.
 
 ### Request schema
 
-**Path params**
+1. Path params
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -100,12 +122,12 @@ Return the stored message history for one conversation.
 | `conversation_id` | `string` | Requested conversation ID. |
 | `messages` | `array<object>` | Ordered list of guest and assistant messages. |
 
-Each item in `messages` has:
+Each item in `messages` contains:
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `role` | `string` | Usually `user` or `assistant`. |
-| `content` | `string` | Message text shown in the chat. |
+| `content` | `string` | Message text shown in the conversation. |
 
 ### Example request
 
@@ -121,19 +143,19 @@ GET /api/chat/conv-001/history
   "messages": [
     {
       "role": "user",
-      "content": "Show me properties in Sylhet for 3 guests this weekend."
+      "content": "I need a room in Cox's Bazar from 2026-05-10 to 2026-05-12 for 2 guests."
     },
     {
       "role": "assistant",
-      "content": "I found Tea Garden Retreat in Sylhet for BDT 4300/night."
+      "content": "I found these available options:\n1. cox-101 - Sea Breeze Studio, Cox's Bazar - BDT 4800/night\n2. cox-205 - Kolatoli Family Suite, Cox's Bazar - BDT 6200/night"
     },
     {
       "role": "user",
-      "content": "Tell me more about that property."
+      "content": "Tell me more about cox-101."
     },
     {
       "role": "assistant",
-      "content": "Tea Garden Retreat costs BDT 4300 per night and fits 3 guests."
+      "content": "cox-101 - Sea Breeze Studio is in Cox's Bazar. It costs BDT 4800 per night, fits 2 guests, and includes wifi, ac, breakfast."
     }
   ]
 }
@@ -141,7 +163,7 @@ GET /api/chat/conv-001/history
 
 ### Possible error responses
 
-`404 Not Found`
+1. `404 Not Found`
 
 ```json
 {
@@ -149,7 +171,7 @@ GET /api/chat/conv-001/history
 }
 ```
 
-`500 Internal Server Error`
+2. `500 Internal Server Error`
 
 ```json
 {
