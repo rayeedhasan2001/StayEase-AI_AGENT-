@@ -2,7 +2,7 @@
 
 ## POST `/api/chat/{conversation_id}/message`
 
-Send one guest message to the StayEase assistant and receive the assistant reply for that turn.
+Send one guest message to the assistant and get one reply back for that turn.
 
 ### Request schema
 
@@ -10,7 +10,7 @@ Send one guest message to the StayEase assistant and receive the assistant reply
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `conversation_id` | `string` | Yes | Client-generated or server-generated conversation reference. |
+| `conversation_id` | `string` | Yes | Unique ID for the conversation. |
 
 **JSON body**
 
@@ -22,9 +22,9 @@ Send one guest message to the StayEase assistant and receive the assistant reply
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `conversation_id` | `string` | Echoes the conversation ID from the path. |
-| `reply` | `string` | Assistant response for this turn. |
-| `escalated` | `boolean` | `true` when the request is outside search/details/book scope. |
+| `conversation_id` | `string` | Same conversation ID from the path. |
+| `reply` | `string` | Assistant reply for this turn. |
+| `escalated` | `boolean` | `true` if the request needs to go to a human. |
 
 ### Example request
 
@@ -83,7 +83,7 @@ Content-Type: application/json
 
 ## GET `/api/chat/{conversation_id}/history`
 
-Return the stored conversation history for one conversation.
+Return the stored message history for one conversation.
 
 ### Request schema
 
@@ -91,7 +91,7 @@ Return the stored conversation history for one conversation.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `conversation_id` | `string` | Yes | Conversation reference used for previous chat turns. |
+| `conversation_id` | `string` | Yes | Conversation ID used in earlier messages. |
 
 ### Response schema
 

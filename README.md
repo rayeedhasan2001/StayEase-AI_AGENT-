@@ -1,6 +1,8 @@
 # StayEase AI Agent
 
-This project is a simple AI assistant for StayEase, a short-term accommodation rental platform in Bangladesh. The backend receives guest messages through FastAPI, passes them to a LangGraph agent, and lets the agent decide whether to search listings, return property details, create a booking, or escalate to a human when the request is outside scope. PostgreSQL stores listings, bookings, and conversation history, while a Groq or OpenRouter hosted LLM handles intent understanding and response generation.
+This is a small AI agent design for StayEase, a short-term rental platform in Bangladesh. I kept the system simple because the agent only needs to do three things: search properties, show property details, and create a booking. FastAPI handles the API layer, LangGraph controls the agent flow, PostgreSQL stores the data, and Groq or OpenRouter can be used as the LLM provider.
+
+For the code skeleton, I kept the implementation minimal and used sample data in the tool layer so the main focus stays on state design, nodes, and routing.
 
 ## 1. System Overview
 
@@ -26,49 +28,49 @@ flowchart LR
 Example guest message: "I need a room in Cox's Bazar for 2 nights for 2 guests."
 
 1. The guest message is sent to `POST /api/chat/{conversation_id}/message`.
-2. FastAPI loads the existing conversation from PostgreSQL and builds the initial LangGraph state.
-3. The `parse_request` node uses the LLM to classify the message as a `search` request and extracts:
+2. FastAPI loads the earlier conversation, if there is one, and builds the initial LangGraph state.
+3. For this walkthrough, I am assuming the exact dates are already available in the current session, so `parse_request` figures out that this is a `search` request and extracts:
    - `location = "Cox's Bazar"`
    - `check_in = "2026-05-10"`
    - `check_out = "2026-05-12"`
    - `guests = 2`
 4. The graph routes to `run_tool`, which calls `search_available_properties`.
-5. The tool queries PostgreSQL for active listings in Cox's Bazar with enough capacity and no conflicting bookings.
+5. The tool checks PostgreSQL for active listings in Cox's Bazar that can take 2 guests and are free for the requested dates.
 6. The tool returns a short list such as:
    - Sea Breeze Studio - BDT 4,800 per night
    - Kolatoli Family Suite - BDT 6,200 per night
    - Inani Ocean View Room - BDT 5,500 per night
-7. The `respond` node turns the tool output into a guest-friendly reply with names, prices, dates, and a follow-up prompt to choose one property.
-8. FastAPI stores the guest message and assistant reply in the `conversations` table and returns the response to the client.
+7. The `respond` node turns that result into a short reply with the listing names and prices.
+8. FastAPI sends the reply back to the guest and saves the turn in the conversation history.
 
 ## 3. LangGraph State Design
 
-The graph uses a single `TypedDict` state object:
+The graph uses one `TypedDict` state object:
 
 | Field | Type | Why it is needed |
 | --- | --- | --- |
-| `conversation_id` | `str` | Links the active turn to stored chat history. |
-| `messages` | `list[dict[str, str]]` | Keeps the running conversation for the LLM and audit trail. |
-| `user_message` | `str` | Stores the newest guest message being processed. |
-| `intent` | `Literal["search", "details", "book", "escalate"] \| None` | Tells the graph which path to take next. |
-| `search_params` | `SearchParams \| None` | Holds parsed location, dates, and guest count for search. |
-| `listing_id` | `str \| None` | Identifies which property the guest is asking about or booking. |
-| `booking_request` | `BookingRequest \| None` | Holds the data needed to create a booking. |
-| `tool_result` | `dict[str, Any] \| None` | Stores the raw output from the last tool call. |
-| `final_response` | `str \| None` | Stores the message that will be returned to the API caller. |
-| `needs_human` | `bool` | Flags when the request should be escalated. |
+| `conversation_id` | `str` | Keeps the current turn linked to the right chat. |
+| `messages` | `list[dict[str, str]]` | Holds the conversation history for the current run. |
+| `user_message` | `str` | Stores the latest guest message. |
+| `intent` | `Literal["search", "details", "book", "escalate"] \| None` | Tells the graph what kind of request this is. |
+| `search_params` | `SearchParams \| None` | Stores location, dates, and guest count for search. |
+| `listing_id` | `str \| None` | Stores the selected listing for details or booking. |
+| `booking_request` | `BookingRequest \| None` | Stores the fields needed to make a booking. |
+| `tool_result` | `dict[str, Any] \| None` | Stores the output from the tool call. |
+| `final_response` | `str \| None` | Stores the final reply that goes back to the guest. |
+| `needs_human` | `bool` | Marks requests that should be handed to a human. |
 
 ## 4. Node Design
 
-The graph is intentionally small:
+I kept the graph small on purpose:
 
 | Node | What it does | What it updates | Next node |
 | --- | --- | --- | --- |
-| `load_context` | Loads prior messages and prepares state for the new turn. | `messages`, `user_message` | `parse_request` |
-| `parse_request` | Uses the LLM to detect intent and extract structured fields. | `intent`, `search_params`, `listing_id`, `booking_request`, `needs_human` | Conditional: `run_tool` or `respond` |
-| `run_tool` | Calls the correct business tool based on the current intent. | `tool_result` | `respond` |
-| `respond` | Builds the final guest-facing reply from state and tool output. | `final_response` | `save_conversation` |
-| `save_conversation` | Persists the new turn to the database before returning. | `messages` | `END` |
+| `load_context` | Adds the latest user message into the current state. | `messages`, `user_message` | `parse_request` |
+| `parse_request` | Decides whether the guest wants search, details, booking, or escalation. | `intent`, `search_params`, `listing_id`, `booking_request`, `needs_human` | Conditional: `run_tool` or `respond` |
+| `run_tool` | Runs the tool that matches the detected intent. | `tool_result` | `respond` |
+| `respond` | Builds the assistant reply from the tool output. | `final_response` | `save_conversation` |
+| `save_conversation` | Adds the final reply to the message list so it can be stored. | `messages` | `END` |
 
 ## 5. Tool Definitions
 
@@ -96,7 +98,7 @@ The graph is intentionally small:
 }
 ```
 
-- Used when the guest wants to find available places for a location, date range, and guest count.
+- Used when the guest asks to find available places for a location, date range, and guest count.
 
 ### `get_listing_details`
 
@@ -116,7 +118,7 @@ The graph is intentionally small:
 }
 ```
 
-- Used when the guest asks about a specific property after seeing search results.
+- Used when the guest asks about one specific property.
 
 ### `create_booking`
 
@@ -137,11 +139,11 @@ The graph is intentionally small:
 }
 ```
 
-- Used when the guest clearly confirms they want to reserve a property.
+- Used when the guest confirms that they want to reserve a property.
 
 ## 6. Database Schema Design
 
-Only three tables are used.
+Only three tables are needed for this design.
 
 ### `listings`
 
